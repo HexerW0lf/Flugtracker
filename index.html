@@ -400,7 +400,7 @@ function update(){if(!cur)return;const lv=cur.live;
   $("vEta").innerHTML=hhmm(eta)+"<small>"+(eta>now?"in "+Math.round((eta-now)/MIN)+" min":"")+"</small>";
   const [nc,nd]=nearest(pos),n=$("near");
   if(lv.landedAt||frac>=.999)n.innerHTML="Angekommen in <b></b>";
-  else if(!lv.takeoffAt&&mode==="est"&&now<effTakeoff)n.innerHTML="Noch am Boden · Start ca. "+hhmm(effTakeoff);
+  else if(!lv.takeoffAt&&mode==="est"&&now<effTakeoff)n.innerHTML="Noch am Boden · Abflug "+hhmm(Math.max(cur.dep,effTakeoff-TAXI_OUT))+", in der Luft ca. "+hhmm(effTakeoff);
   else n.innerHTML=(nd<40?"Über ":"Nächster Flughafen: ")+"<b></b> <span style='color:var(--dim)'>("+Math.round(nd)+" km)</span>";
   const b=n.querySelector("b");if(b)b.textContent=(lv.landedAt||frac>=.999)?AP[cur.to][0]:AP[nc][0];
   if(map&&!map._userMoved)map.panTo(pos,{animate:false});}

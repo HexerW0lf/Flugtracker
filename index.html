@@ -61,6 +61,12 @@ input::-webkit-date-and-time-value{text-align:left}
 .grid>div{background:var(--panel);padding:10px 12px;min-width:0}
 .status{cursor:pointer;display:inline-flex;align-items:center;gap:6px;font:700 11px var(--sans);letter-spacing:.1em;text-transform:uppercase;padding:5px 9px;border-radius:999px;border:1px solid currentColor}
 .status::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.delay{margin-top:12px;border-radius:14px;padding:12px 14px;border:1px solid currentColor;background:var(--panel)}
+.delay .dMain{font:700 20px var(--mono)}
+.delay .dSub{color:var(--fg);font-size:14px;margin-top:2px}
+.delay .dNet{color:var(--dim);font-size:12px;margin-top:4px}
+.d-green{color:var(--green)} .d-amber{color:var(--amber)} .d-red{color:var(--red)}
+.s-net{color:var(--cyan)}
 .s-gps{color:var(--green)} .s-est{color:var(--amber)} .s-off{color:var(--red)}
 .near{margin-top:12px;font-size:15px}
 .near b{color:var(--cyan)}
@@ -108,6 +114,7 @@ input::-webkit-date-and-time-value{text-align:left}
     <div class="ends"><span id="lFrom">—</span><span id="lNr" style="color:var(--dim);font-weight:400">—</span><span id="lTo">—</span></div>
     <div class="bar"><i id="pbar"></i></div>
   </div>
+  <div class="delay d-green" id="delay"><div class="dMain" id="dMain">Pünktlich</div><div id="dSub" class="dSub">—</div><div id="dNet" class="dNet"></div></div>
   <div id="map"></div>
   <div class="near" id="near">Position wird ermittelt …</div>
   <div class="grid">
@@ -123,7 +130,10 @@ input::-webkit-date-and-time-value{text-align:left}
     <button id="btnCache">Karte offline speichern</button>
     <button id="btnWake">Bildschirm anlassen</button>
   </div>
-  <p class="note">Vor dem Abflug mit Internet einmal öffnen und „Karte offline speichern“ tippen. Im Flugmodus funktioniert GPS weiter, nur die Kartendetails kommen dann aus dem Speicher. Am Fensterplatz ist der Empfang am besten. Ohne GPS schätzt die App die Position anhand der Uhrzeit (gelb).</p>
+  <div class="field" style="margin-top:16px"><label class="lbl" for="cs">Rufzeichen für Live-Daten</label>
+    <input id="cs" placeholder="z. B. SXS248" style="text-transform:uppercase">
+    <span class="hint">Wird aus der Flugnummer erzeugt. Nur ändern, wenn der Flug online nicht gefunden wird.</span></div>
+  <p class="note">Vor dem Abflug mit Internet einmal öffnen und „Karte offline speichern“ tippen. Im Flugmodus funktioniert GPS weiter, nur die Kartendetails kommen dann aus dem Speicher. Am Fensterplatz ist der Empfang am besten. Mit Internet prüft die App jede Minute die echten Flugdaten und erkennt, ob ihr noch am Boden steht. In der Luft rechnet sie aus GPS-Position, Tempo und Uhrzeit die Ankunft und die Verspätung aus. Ohne GPS schätzt sie die Position anhand der Uhrzeit (gelb).</p>
 </section>
 
 </div>
@@ -243,7 +253,7 @@ function renderList(){const L=$("flist");L.innerHTML="";
     const d=new Date(fl.dep);const div=document.createElement("div");div.className="fitem";
     const km=Math.round(dist(AP[fl.from].slice(1),AP[fl.to].slice(1)));
     div.innerHTML=`<div class="route">${fl.from} → ${fl.to}<span class="meta"></span></div>`;
-    div.querySelector(".meta").textContent=`${fl.nr?fl.nr+" · ":""}${d.toLocaleDateString("de-DE",{weekday:"short",day:"2-digit",month:"2-digit"})} ${d.toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"})} · ${km.toLocaleString("de-DE")} km`;
+    div.querySelector(".meta").textContent=`${fl.nr?fl.nr+" · ":""}${d.toLocaleDateString("de-DE",{weekday:"short",day:"2-digit",month:"2-digit"})} ${d.toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"})} · ${km.toLocaleString("de-DE")} km${fl.live&&fl.live.eta&&fl.live.eta-fl.arr>5*60000?" · +"+Math.round((fl.live.eta-fl.arr)/60000)+" min":""}`;
     const o=document.createElement("button");o.className="pri";o.textContent="Öffnen";o.onclick=()=>openFlight(fl.id);
     const x=document.createElement("button");x.className="ghost";x.textContent="✕";x.setAttribute("aria-label","Flug löschen");
     x.onclick=()=>{if(x.dataset.c){flights=flights.filter(f=>f.id!==fl.id);store.set("flights",flights);renderList()}else{x.dataset.c=1;x.textContent="Löschen?";setTimeout(()=>{delete x.dataset.c;x.textContent="✕"},3000)}};
@@ -251,34 +261,51 @@ function renderList(){const L=$("flist");L.innerHTML="";
   if(!flights.length)L.innerHTML='<p class="hint">Noch kein Flug gespeichert.</p>';}
 
 // ---------- Live ----------
-let map,plane,cur,watchId,lastFix=null,routeLine,trackLine,track=[],wakeLock=null,timer;
+let map,plane,cur,watchId,lastFix=null,prevFix=null,routeLine,trackLine,track=[],wakeLock=null,timer,pollTimer,lastSnap=null;
 const TILE="https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+const MIN=60000,TAXI_OUT=15*MIN,TAXI_IN=8*MIN;
+
+// IATA-Airline -> ICAO-Rufzeichen-Präfix (für die Live-Abfrage)
+const ICAO={XQ:"SXS",TK:"THY",PC:"PGT",VF:"TKJ",LH:"DLH",EW:"EWG",DE:"CFG",X3:"TUI",FR:"RYR",U2:"EZY",W6:"WZZ",
+  OS:"AUA",LX:"SWR",KL:"KLM",AF:"AFR",BA:"BAW",VY:"VLG",IB:"IBE",A3:"AEE",HV:"TRA",SN:"BEL",SK:"SAS",AY:"FIN",
+  LO:"LOT",OK:"CSA",EK:"UAE",QR:"QTR",EY:"ETD",MS:"MSR",BT:"BTI",FZ:"FDB",XC:"CAI",XR:"CXI",QS:"TVS",EN:"DLA",
+  "4Y":"OCN",TO:"TVF",DY:"NOZ",AZ:"ITY",TP:"TAP",UX:"AEA",LS:"EXS",BY:"TOM",OR:"TFL",SM:"MSC"};
+function callsignOf(fl){if(fl.cs)return fl.cs;const m=(fl.nr||"").toUpperCase().replace(/\s+/g,"").match(/^([A-Z0-9]{2})(\d{1,4})[A-Z]?$/);
+  if(!m||!ICAO[m[1]])return "";return ICAO[m[1]]+m[2];}
+function save(){const i=flights.findIndex(f=>f.id===cur.id);if(i>=0){flights[i]=cur;store.set("flights",flights)}}
+const hhmm=t=>new Date(t).toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"});
 
 function openFlight(id){cur=flights.find(f=>f.id===id);if(!cur)return;
+  cur.live=cur.live||{};
   store.set("active",id);$("setup").hidden=true;$("live").hidden=false;
   const A=AP[cur.from],B=AP[cur.to];
   $("lFrom").textContent=cur.from;$("lTo").textContent=cur.to;$("lNr").textContent=cur.nr||`${A[0]} – ${B[0]}`;
+  $("cs").value=callsignOf(cur);
   if(!map){map=L.map("map",{zoomControl:false,attributionControl:true,worldCopyJump:true});
     L.tileLayer(TILE,{maxZoom:9,attribution:"© OpenStreetMap"}).addTo(map);
     map.on("dragstart",()=>map._userMoved=true);
     $("status").onclick=()=>{map._userMoved=false;update()};}
   if(routeLine)routeLine.remove();if(trackLine)trackLine.remove();
-  const line=gcLine(A.slice(1),B.slice(1));
-  routeLine=L.polyline(line,{color:"#e879f9",weight:3,dashArray:"6 6"}).addTo(map);
+  routeLine=L.polyline(gcLine(A.slice(1),B.slice(1)),{color:"#e879f9",weight:3,dashArray:"6 6"}).addTo(map);
   track=store.get("track_"+id,[]);
   trackLine=L.polyline(track,{color:"#4ade80",weight:3}).addTo(map);
-  [[A,cur.from],[B,cur.to]].forEach(([p,c])=>L.circleMarker([p[1],p[2]],{radius:5,color:"#3fd0e6",fillOpacity:1}).addTo(map).bindTooltip(c,{permanent:true,direction:"top",className:""}));
+  [[A,cur.from],[B,cur.to]].forEach(([p,c])=>L.circleMarker([p[1],p[2]],{radius:5,color:"#3fd0e6",fillOpacity:1}).addTo(map).bindTooltip(c,{permanent:true,direction:"top"}));
   if(!plane)plane=L.marker([A[1],A[2]],{icon:L.divIcon({className:"",html:'<div class="plane" id="pl">✈</div>',iconSize:[26,26],iconAnchor:[13,13]})}).addTo(map);
   map.fitBounds(routeLine.getBounds(),{padding:[30,30]});
   setTimeout(()=>map.invalidateSize(),50);
-  clearInterval(timer);timer=setInterval(update,5000);update();
+  clearInterval(timer);timer=setInterval(update,5000);
+  clearInterval(pollTimer);pollTimer=setInterval(checkOnline,60000);checkOnline();
+  update();
   if(store.get("gpsOn",false))startGps();}
 
-$("back").onclick=()=>{$("live").hidden=true;$("setup").hidden=false;store.set("active",null);clearInterval(timer);stopGps();renderList();};
+$("back").onclick=()=>{$("live").hidden=true;$("setup").hidden=false;store.set("active",null);clearInterval(timer);clearInterval(pollTimer);stopGps();renderList();};
+$("cs").onchange=()=>{cur.cs=$("cs").value.trim().toUpperCase().replace(/\s+/g,"");$("cs").value=callsignOf(cur);cur.live.seen=false;save();checkOnline();};
 
+// ---------- GPS ----------
 function startGps(){if(!("geolocation" in navigator)){toast("Dieses Gerät bietet kein GPS im Browser");return}
   stopGps();store.set("gpsOn",true);$("btnGps").textContent="GPS stoppen";$("btnGps").className="";
   watchId=navigator.geolocation.watchPosition(p=>{
+    if(lastFix&&p.timestamp-lastFix.timestamp>3000)prevFix=lastFix;
     lastFix=p;const pt=[p.coords.latitude,p.coords.longitude];
     const prev=track[track.length-1];
     if(!prev||dist(prev,pt)>2){track.push(pt);if(track.length>3000)track.shift();store.set("track_"+cur.id,track);trackLine.setLatLngs(track);}
@@ -288,47 +315,95 @@ function startGps(){if(!("geolocation" in navigator)){toast("Dieses Gerät biete
 function stopGps(){if(watchId!=null)navigator.geolocation.clearWatch(watchId);watchId=null;
   $("btnGps").textContent="GPS starten";$("btnGps").className="pri";}
 $("btnGps").onclick=()=>{if(watchId!=null){stopGps();store.set("gpsOn",false);update()}else startGps()};
+function gpsSpeed(){if(!lastFix)return null;const s=lastFix.coords.speed;if(s!=null&&!isNaN(s))return s*3.6;
+  if(prevFix){const h=(lastFix.timestamp-prevFix.timestamp)/3.6e6;if(h>0)return dist([prevFix.coords.latitude,prevFix.coords.longitude],[lastFix.coords.latitude,lastFix.coords.longitude])/h}
+  return null;}
+
+// ---------- Live-Daten aus dem Internet (ADS-B) ----------
+async function getJSON(url,ms=8000){const c=new AbortController();const t=setTimeout(()=>c.abort(),ms);
+  try{const r=await fetch(url,{signal:c.signal,cache:"no-store"});if(!r.ok)throw 0;return await r.json()}finally{clearTimeout(t)}}
+function fromReadsb(j,cs){const a=(j.ac||j.aircraft||[]).find(x=>(x.flight||"").trim().toUpperCase()===cs);if(!a)return {found:false};
+  const ground=a.alt_baro==="ground";
+  return {found:true,ground,pos:a.lat!=null?[a.lat,a.lon]:null,spd:a.gs!=null?a.gs*1.852:null,alt:ground?0:(a.alt_geom??a.alt_baro??null)/3.281,trk:a.track??null};}
+const SOURCES=[
+  async cs=>fromReadsb(await getJSON("https://api.adsb.lol/v2/callsign/"+cs),cs),
+  async cs=>fromReadsb(await getJSON("https://api.airplanes.live/v2/callsign/"+cs),cs),
+  async (cs,A,B)=>{const la=[A[0],B[0]],lo=[A[1],B[1]];
+    const j=await getJSON(`https://opensky-network.org/api/states/all?lamin=${Math.min(...la)-2}&lamax=${Math.max(...la)+2}&lomin=${Math.min(...lo)-2}&lomax=${Math.max(...lo)+2}`,12000);
+    const s=(j.states||[]).find(x=>(x[1]||"").trim().toUpperCase()===cs);if(!s)return {found:false};
+    return {found:true,ground:!!s[8],pos:s[6]!=null?[s[6],s[5]]:null,spd:s[9]!=null?s[9]*3.6:null,alt:s[13]??s[7],trk:s[10]};}];
+
+async function checkOnline(){if(!cur)return;const now=Date.now(),lv=cur.live;
+  const cs=callsignOf(cur);
+  if(!cs){lv.netNote="Für Live-Daten Flugnummer oder Rufzeichen eintragen";update();return}
+  if(!navigator.onLine){lv.netNote="";update();return}
+  if(now<cur.dep-3*3.6e6||now>cur.arr+4*3.6e6||lv.landedAt){update();return}
+  let res=null,reached=false;
+  for(const src of SOURCES){try{const r=await src(cs,AP[cur.from].slice(1),AP[cur.to].slice(1));reached=true;if(r.found){res=r;break}}catch{}}
+  lv.lastCheck=now;
+  if(!reached){lv.netNote="Live-Daten gerade nicht erreichbar";}
+  else if(res){lv.seen=true;lv.netNote="";
+    if(res.ground||!res.pos||(res.spd!=null&&res.spd<150)){if(!lv.takeoffAt)lv.groundAt=now;}
+    else lv.online={pos:res.pos,spd:res.spd,alt:res.alt,trk:res.trk,at:now};}
+  else{lv.netNote=lv.seen?"":"Flug "+cs+" noch nicht in den Live-Daten";
+    if(lv.seen&&!lv.takeoffAt&&now>cur.dep)lv.groundAt=now;}
+  save();update();}
+window.addEventListener("online",checkOnline);
 
 function nearest(pt){let best=null,bd=1e9;for(const c in AP){const d=dist(pt,AP[c].slice(1));if(d<bd){bd=d;best=c}}return [best,bd];}
 
-function update(){if(!cur)return;
+// ---------- Hauptberechnung ----------
+function update(){if(!cur)return;const lv=cur.live;
   const A=AP[cur.from].slice(1),B=AP[cur.to].slice(1),total=dist(A,B),now=Date.now();
-  const fresh=lastFix&&now-lastFix.timestamp<120000;
-  let pos,mode;
-  if(fresh){pos=[lastFix.coords.latitude,lastFix.coords.longitude];mode="gps"}
-  else{const f=Math.min(1,Math.max(0,(now-cur.dep)/(cur.arr-cur.dep)));pos=gcPoint(A,B,f);mode="est"}
-  const dA=dist(A,pos),dB=dist(pos,B);
-  const frac=Math.min(1,Math.max(0,dA/(dA+dB||1)));
-  // Status
+  const airTime=Math.max(20*MIN,cur.arr-cur.dep-TAXI_OUT-TAXI_IN);
+  // 1) Beste verfügbare Position
+  let pos=null,spd=null,alt=null,hdg=null,mode="est",acc=null;
+  if(lastFix&&now-lastFix.timestamp<120000){mode="gps";pos=[lastFix.coords.latitude,lastFix.coords.longitude];spd=gpsSpeed();
+    alt=lastFix.coords.altitude;acc=lastFix.coords.accuracy;const h=lastFix.coords.heading;if(h!=null&&!isNaN(h)&&spd>20)hdg=h;}
+  else if(lv.online&&now-lv.online.at<4*MIN){mode="net";pos=lv.online.pos;spd=lv.online.spd;alt=lv.online.alt;hdg=lv.online.trk;}
+  // 2) Start und Landung erkennen
+  if(pos){const dA=dist(A,pos),dB=dist(pos,B);
+    if(!lv.takeoffAt&&dA>3&&(spd>260||(spd>180&&alt>300))){lv.takeoffAt=dA<30?now:now-dA/Math.max(spd*0.85,300)*3.6e6;save();toast("Start erkannt um "+hhmm(lv.takeoffAt))}
+    if(lv.takeoffAt&&!lv.landedAt&&dB<6&&spd!=null&&spd<60){lv.landedAt=now;save();}}
+  // 3) Ohne Live-Position: aus der Uhrzeit schätzen
+  const effTakeoff=lv.takeoffAt||Math.max(cur.dep+TAXI_OUT,(lv.groundAt||0)+5*MIN);
+  if(!pos){const f=lv.landedAt?1:Math.min(1,Math.max(0,(now-effTakeoff)/airTime));pos=gcPoint(A,B,f);
+    if(f>0&&f<1)spd=total/(airTime/3.6e6);}
+  const dA=dist(A,pos),dB=dist(pos,B),frac=lv.landedAt?1:Math.min(1,Math.max(0,dA/(dA+dB||1)));
+  if(hdg==null&&dB>1)hdg=bearing(pos,B);
+  // 4) Ankunft und Verspätung
+  let eta,why;
+  if(lv.landedAt){eta=lv.landedAt+TAXI_IN;why="gelandet "+hhmm(lv.landedAt)}
+  else if(mode!=="est"&&spd>250){eta=now+dB/(spd*0.9)*3.6e6+TAXI_IN;why=mode==="gps"?"aus GPS-Position und Tempo":"aus Live-Daten"}
+  else if(lv.takeoffAt){eta=lv.takeoffAt+airTime+TAXI_IN;why="gestartet "+hhmm(lv.takeoffAt)}
+  else if(lv.groundAt&&now>cur.dep){eta=effTakeoff+airTime+TAXI_IN;why="noch am Boden ("+hhmm(lv.groundAt)+")"}
+  else{eta=cur.arr;why="Flugplan"}
+  if(lv.eta!==Math.round(eta)){lv.eta=Math.round(eta);save();}
+  const delay=Math.round((eta-cur.arr)/MIN);
+  // ---- Anzeige ----
   const st=$("status");
-  if(mode==="gps"){st.className="status s-gps";st.textContent="GPS "+Math.round(lastFix.coords.accuracy)+" m"}
-  else{st.className="status s-est";st.textContent=watchId!=null?"Suche GPS · geschätzt":"Geschätzt (Uhrzeit)"}
-  // Karte
+  if(mode==="gps"){st.className="status s-gps";st.textContent="GPS "+Math.round(acc)+" m"}
+  else if(mode==="net"){st.className="status s-net";st.textContent="Live-Daten"}
+  else{st.className="status s-est";st.textContent=watchId!=null?"Suche GPS · geschätzt":"Geschätzt"}
+  const d=$("delay");d.className="delay "+(delay>=30?"d-red":delay>5?"d-amber":"d-green");
+  $("dMain").textContent=delay>5?`+${delay} min Verspätung`:delay<-5?`${-delay} min früher`:"Pünktlich";
+  $("dSub").textContent=`Ankunft ${hhmm(eta)} statt ${hhmm(cur.arr)} · ${why}`;
+  $("dNet").textContent=lv.netNote||(lv.lastCheck?"Online geprüft "+hhmm(lv.lastCheck):"");
   plane.setLatLng(pos);
-  let hdg=null;
-  if(mode==="gps"&&lastFix.coords.heading!=null&&!isNaN(lastFix.coords.heading)&&lastFix.coords.speed>5)hdg=lastFix.coords.heading;
-  else if(dB>1)hdg=bearing(pos,B);
   const pl=document.getElementById("pl");if(pl&&hdg!=null)pl.style.transform=`rotate(${hdg-90}deg)`;
-  // Werte
   $("pbar").style.width=(frac*100).toFixed(1)+"%";
-  $("vRem").innerHTML=fmtKm(dB)+"<small>km</small>";
-  $("vDone").innerHTML=fmtKm(dA)+"<small>km</small>";
+  $("vRem").innerHTML=fmtKm(lv.landedAt?0:dB)+"<small>km</small>";
+  $("vDone").innerHTML=fmtKm(lv.landedAt?total:dA)+"<small>km</small>";
   $("vHdg").innerHTML=hdg!=null?Math.round(hdg)+"°<small>"+compass(hdg)+"</small>":"—";
-  let spd=null;if(mode==="gps"&&lastFix.coords.speed!=null)spd=lastFix.coords.speed*3.6;
-  $("vSpd").innerHTML=spd!=null?Math.round(spd)+"<small>km/h</small>":(mode==="est"?Math.round(total/((cur.arr-cur.dep)/3.6e6))+"<small>km/h Ø</small>":"—");
-  const alt=mode==="gps"?lastFix.coords.altitude:null;
-  $("vAlt").innerHTML=alt!=null?Math.round(alt).toLocaleString("de-DE")+"<small>m · "+Math.round(alt*3.281/100)*100+" ft</small>":"—";
-  let eta=cur.arr;if(spd&&spd>200)eta=now+dB/spd*3.6e6;
-  const t=new Date(eta);$("vEta").innerHTML=t.toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"})+"<small>"+(eta>now?"in "+Math.max(0,Math.round((eta-now)/60000))+" min":"")+"</small>";
-  // In der Nähe
-  const [nc,nd]=nearest(pos);
-  const n=$("near");
-  if(now<cur.dep&&mode==="est")n.innerHTML="Noch nicht gestartet · Abflug "+new Date(cur.dep).toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"});
-  else if(frac>=.999)n.innerHTML="Angekommen in <b></b>";
+  $("vSpd").innerHTML=spd!=null?Math.round(spd)+"<small>km/h"+(mode==="est"?" Ø":"")+"</small>":"—";
+  $("vAlt").innerHTML=alt!=null?Math.round(alt).toLocaleString("de-DE")+"<small>m · "+(Math.round(alt*3.281/100)*100).toLocaleString("de-DE")+" ft</small>":"—";
+  $("vEta").innerHTML=hhmm(eta)+"<small>"+(eta>now?"in "+Math.round((eta-now)/MIN)+" min":"")+"</small>";
+  const [nc,nd]=nearest(pos),n=$("near");
+  if(lv.landedAt||frac>=.999)n.innerHTML="Angekommen in <b></b>";
+  else if(!lv.takeoffAt&&mode==="est"&&now<effTakeoff)n.innerHTML="Noch am Boden · Start ca. "+hhmm(effTakeoff);
   else n.innerHTML=(nd<40?"Über ":"Nächster Flughafen: ")+"<b></b> <span style='color:var(--dim)'>("+Math.round(nd)+" km)</span>";
-  const b=n.querySelector("b");if(b)b.textContent=frac>=.999?AP[cur.to][0]:AP[nc][0];
+  const b=n.querySelector("b");if(b)b.textContent=(lv.landedAt||frac>=.999)?AP[cur.to][0]:AP[nc][0];
   if(map&&!map._userMoved)map.panTo(pos,{animate:false});}
-
 
 // ---------- Karte offline speichern ----------
 function lon2x(lon,z){return Math.floor((lon+180)/360*2**z)}

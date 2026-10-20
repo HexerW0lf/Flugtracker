@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<title>Flugtracker</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=B612:wght@400;700&family=B612+Mono:wght@400;700&display=swap">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+/* Cockpit-Display: dunkler Grund, Werte in B612 (die Airbus-Cockpitschrift), Zustände in Avionik-Farben */
+:root{
+  --bg:#0b1220; --panel:#121b2e; --line:#24324f; --fg:#e6ecf7; --dim:#8b9ab8;
+  --cyan:#3fd0e6; --green:#4ade80; --amber:#fbbf24; --magenta:#e879f9; --red:#f87171;
+  --sans:"B612",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:"B612 Mono",ui-monospace,Menlo,Consolas,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.4 var(--sans);
+  padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+.wrap{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:16px;max-width:640px;margin:0 auto}
+h1{font-size:20px;margin:0;letter-spacing:.04em}
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.lbl{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+.val{font:700 22px/1.15 var(--mono);font-variant-numeric:tabular-nums}
+.val small{font-size:13px;color:var(--dim);font-weight:400;margin-left:3px}
+button{font:700 14px var(--sans);letter-spacing:.04em;border-radius:10px;border:1px solid var(--line);
+  background:var(--panel);color:var(--fg);padding:11px 14px;cursor:pointer}
+button.pri{background:var(--cyan);color:#04202a;border-color:var(--cyan)}
+button.ghost{background:transparent}
+button:focus-visible,input:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+input{font:16px var(--mono);width:100%;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:11px 12px}
+form{display:grid;gap:14px;margin-top:16px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.field{display:grid;gap:6px;min-width:0}
+.hint{color:var(--dim);font-size:13px}
+.ap{font-size:12px;color:var(--cyan);min-height:1.2em}
+.ap.bad{color:var(--red)}
+/* Liste gespeicherter Flüge */
+.flist{display:grid;gap:10px;margin-top:20px}
+.fitem{display:flex;align-items:center;gap:12px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}
+.fitem .route{font:700 18px var(--mono);flex:1;min-width:0}
+.fitem .meta{display:block;font:12px var(--sans);color:var(--dim);margin-top:2px}
+/* Live-Ansicht */
+#map{height:44vh;min-height:260px;border-radius:14px;border:1px solid var(--line);margin-top:12px;background:#0e1a2c}
+.leaflet-container{background:#0e1a2c;font-family:var(--sans)}
+.leaflet-tile-pane{filter:invert(1) hue-rotate(190deg) brightness(.85) contrast(.9) saturate(.6)}
+.progress{margin-top:14px}
+.bar{height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin-top:6px}
+.bar i{display:block;height:100%;background:var(--magenta);width:0}
+.ends{display:flex;justify-content:space-between;font:700 15px var(--mono);margin-top:6px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-top:14px}
+.grid>div{background:var(--panel);padding:10px 12px;min-width:0}
+.status{cursor:pointer;display:inline-flex;align-items:center;gap:6px;font:700 11px var(--sans);letter-spacing:.1em;text-transform:uppercase;padding:5px 9px;border-radius:999px;border:1px solid currentColor}
+.status::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.s-gps{color:var(--green)} .s-est{color:var(--amber)} .s-off{color:var(--red)}
+.near{margin-top:12px;font-size:15px}
+.near b{color:var(--cyan)}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.note{margin-top:14px;font-size:13px;color:var(--dim);line-height:1.5}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);padding:10px 14px;border-radius:10px;font-size:14px;max-width:90vw}
+.plane{color:var(--amber);font-size:26px;line-height:26px;text-shadow:0 0 6px #000}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<!-- ===== Flug eintragen ===== -->
+<section id="setup">
+  <div class="top"><h1>✈ Flugtracker</h1></div>
+  <form id="f" autocomplete="off">
+    <div class="field"><label class="lbl" for="nr">Flugnummer (optional)</label>
+      <input id="nr" placeholder="z. B. TK 1724"></div>
+    <div class="row2">
+      <div class="field"><label class="lbl" for="from">Von (IATA)</label>
+        <input id="from" maxlength="3" placeholder="LEJ" required style="text-transform:uppercase">
+        <div class="ap" id="fromName"></div></div>
+      <div class="field"><label class="lbl" for="to">Nach (IATA)</label>
+        <input id="to" maxlength="3" placeholder="IST" required style="text-transform:uppercase">
+        <div class="ap" id="toName"></div></div>
+    </div>
+    <div class="row2">
+      <div class="field"><label class="lbl" for="dep">Abflug</label><input id="dep" type="datetime-local" required></div>
+      <div class="field"><label class="lbl" for="arr">Ankunft</label><input id="arr" type="datetime-local" required></div>
+    </div>
+    <p class="hint">Zeiten in der Uhrzeit deines Handys eintragen (Ankunft also umgerechnet, falls eine andere Zeitzone).</p>
+    <button class="pri" type="submit">Flug speichern</button>
+  </form>
+  <div class="flist" id="flist"></div>
+</section>
+
+<!-- ===== Live während des Flugs ===== -->
+<section id="live" hidden>
+  <div class="top">
+    <button class="ghost" id="back">← Flüge</button>
+    <span class="status s-off" id="status">Kein Signal</span>
+  </div>
+  <div class="progress">
+    <div class="ends"><span id="lFrom">—</span><span id="lNr" style="color:var(--dim);font-weight:400">—</span><span id="lTo">—</span></div>
+    <div class="bar"><i id="pbar"></i></div>
+  </div>
+  <div id="map"></div>
+  <div class="near" id="near">Position wird ermittelt …</div>
+  <div class="grid">
+    <div><div class="lbl">Geschwindigkeit</div><div class="val" id="vSpd">—</div></div>
+    <div><div class="lbl">Höhe</div><div class="val" id="vAlt">—</div></div>
+    <div><div class="lbl">Noch zu fliegen</div><div class="val" id="vRem">—</div></div>
+    <div><div class="lbl">Geflogen</div><div class="val" id="vDone">—</div></div>
+    <div><div class="lbl">Ankunft ca.</div><div class="val" id="vEta">—</div></div>
+    <div><div class="lbl">Kurs</div><div class="val" id="vHdg">—</div></div>
+  </div>
+  <div class="actions">
+    <button id="btnGps" class="pri">GPS starten</button>
+    <button id="btnCache">Karte offline speichern</button>
+    <button id="btnWake">Bildschirm anlassen</button>
+  </div>
+  <p class="note">Vor dem Abflug mit Internet einmal öffnen und „Karte offline speichern“ tippen. Im Flugmodus funktioniert GPS weiter, nur die Kartendetails kommen dann aus dem Speicher. Am Fensterplatz ist der Empfang am besten. Ohne GPS schätzt die App die Position anhand der Uhrzeit (gelb).</p>
+</section>
+
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// ---------- Flughäfen: IATA -> [Name, Breite, Länge] ----------
+const AP={
+ERF:["Erfurt-Weimar",50.9798,10.9581],LEJ:["Leipzig/Halle",51.4239,12.2364],BER:["Berlin",52.3667,13.5033],
+FRA:["Frankfurt",50.0333,8.5706],MUC:["München",48.3538,11.7861],HAM:["Hamburg",53.6304,9.9882],
+DUS:["Düsseldorf",51.2895,6.7668],CGN:["Köln/Bonn",50.8659,7.1427],STR:["Stuttgart",48.6899,9.2220],
+HAJ:["Hannover",52.4611,9.6851],NUE:["Nürnberg",49.4987,11.0780],DRS:["Dresden",51.1328,13.7672],
+BRE:["Bremen",53.0475,8.7867],DTM:["Dortmund",51.5183,7.6122],FMM:["Memmingen",47.9888,10.2395],
+HHN:["Frankfurt-Hahn",49.9487,7.2639],NRN:["Weeze",51.6024,6.1422],FKB:["Karlsruhe/Baden-Baden",48.7794,8.0805],
+PAD:["Paderborn",51.6141,8.6163],FDH:["Friedrichshafen",47.6713,9.5115],SCN:["Saarbrücken",49.2146,7.1095],
+VIE:["Wien",48.1103,16.5697],SZG:["Salzburg",47.7933,13.0043],INN:["Innsbruck",47.2602,11.3440],
+ZRH:["Zürich",47.4647,8.5492],GVA:["Genf",46.2381,6.1090],BSL:["Basel",47.5896,7.5299],
+AMS:["Amsterdam",52.3086,4.7639],BRU:["Brüssel",50.9014,4.4844],CPH:["Kopenhagen",55.6180,12.6560],
+OSL:["Oslo",60.1939,11.1004],ARN:["Stockholm",59.6519,17.9186],HEL:["Helsinki",60.3172,24.9633],
+LHR:["London Heathrow",51.4700,-0.4543],LGW:["London Gatwick",51.1537,-0.1821],STN:["London Stansted",51.8850,0.2350],
+DUB:["Dublin",53.4213,-6.2701],EDI:["Edinburgh",55.9500,-3.3725],MAN:["Manchester",53.3537,-2.2750],
+CDG:["Paris CDG",49.0097,2.5479],ORY:["Paris Orly",48.7262,2.3652],NCE:["Nizza",43.6584,7.2159],
+LYS:["Lyon",45.7256,5.0811],MRS:["Marseille",43.4393,5.2214],MAD:["Madrid",40.4719,-3.5626],
+BCN:["Barcelona",41.2971,2.0785],PMI:["Palma de Mallorca",39.5517,2.7388],AGP:["Málaga",36.6749,-4.4991],
+ALC:["Alicante",38.2822,-0.5582],VLC:["Valencia",39.4893,-0.4816],IBZ:["Ibiza",38.8729,1.3731],
+TFS:["Teneriffa Süd",28.0445,-16.5725],LPA:["Gran Canaria",27.9319,-15.3866],ACE:["Lanzarote",28.9455,-13.6052],
+FUE:["Fuerteventura",28.4527,-13.8638],LIS:["Lissabon",38.7742,-9.1342],OPO:["Porto",41.2481,-8.6814],
+FAO:["Faro",37.0144,-7.9659],FNC:["Madeira",32.6979,-16.7745],FCO:["Rom Fiumicino",41.8003,12.2389],
+MXP:["Mailand Malpensa",45.6306,8.7281],VCE:["Venedig",45.5053,12.3519],NAP:["Neapel",40.8860,14.2908],
+CTA:["Catania",37.4668,15.0664],PMO:["Palermo",38.1760,13.0910],BLQ:["Bologna",44.5354,11.2887],
+ATH:["Athen",37.9364,23.9445],HER:["Heraklion (Kreta)",35.3397,25.1803],RHO:["Rhodos",36.4054,28.0862],
+SKG:["Thessaloniki",40.5197,22.9709],CFU:["Korfu",39.6019,19.9117],KGS:["Kos",36.7933,27.0917],
+LCA:["Larnaka",34.8751,33.6249],PFO:["Paphos",34.7180,32.4857],MLA:["Malta",35.8575,14.4775],
+DBV:["Dubrovnik",42.5614,18.2682],SPU:["Split",43.5389,16.2980],ZAG:["Zagreb",45.7429,16.0688],
+BEG:["Belgrad",44.8184,20.3091],SOF:["Sofia",42.6967,23.4114],VAR:["Varna",43.2321,27.8251],
+BOJ:["Burgas",42.5696,27.5152],OTP:["Bukarest",44.5711,26.0850],BUD:["Budapest",47.4369,19.2556],
+PRG:["Prag",50.1008,14.2600],WAW:["Warschau",52.1657,20.9671],KRK:["Krakau",50.0777,19.7848],
+TIA:["Tirana",41.4147,19.7206],SKP:["Skopje",41.9616,21.6214],PRN:["Pristina",42.5728,21.0358],
+IST:["Istanbul",41.2753,28.7519],SAW:["Istanbul Sabiha Gökçen",40.8986,29.3092],ESB:["Ankara",40.1281,32.9951],
+AYT:["Antalya",36.8987,30.8005],ADB:["Izmir",38.2924,27.1570],DLM:["Dalaman",36.7131,28.7925],
+BJV:["Bodrum",37.2506,27.6643],GZT:["Gaziantep",36.9472,37.4787],ASR:["Kayseri",38.7704,35.4954],
+TZX:["Trabzon",40.9951,39.7897],ADA:["Adana",36.9822,35.2804],KYA:["Konya",37.9790,32.5619],
+DIY:["Diyarbakır",37.8939,40.2010],SZF:["Samsun",41.2545,36.5671],GZP:["Gazipaşa-Alanya",36.2992,32.3006],
+DXB:["Dubai",25.2528,55.3644],AUH:["Abu Dhabi",24.4330,54.6511],DOH:["Doha",25.2731,51.6081],
+CAI:["Kairo",30.1219,31.4056],HRG:["Hurghada",27.1783,33.7994],SSH:["Sharm el-Sheikh",27.9773,34.3950],
+RMF:["Marsa Alam",25.5571,34.5837],TUN:["Tunis",36.8510,10.2272],DJE:["Djerba",33.8750,10.7755],
+RAK:["Marrakesch",31.6069,-8.0363],AGA:["Agadir",30.3250,-9.4131],CMN:["Casablanca",33.3675,-7.5900],
+TLV:["Tel Aviv",32.0114,34.8867],AMM:["Amman",31.7226,35.9932],RUH:["Riad",24.9576,46.6988],
+JED:["Dschidda",21.6796,39.1565],TBS:["Tiflis",41.6692,44.9547],EVN:["Eriwan",40.1473,44.3959],
+GYD:["Baku",40.4675,50.0467],DEL:["Delhi",28.5562,77.1000],BOM:["Mumbai",19.0896,72.8656],
+BKK:["Bangkok",13.6900,100.7501],HKT:["Phuket",8.1132,98.3169],SIN:["Singapur",1.3644,103.9915],
+KUL:["Kuala Lumpur",2.7456,101.7099],DPS:["Bali",-8.7482,115.1670],HKG:["Hongkong",22.3080,113.9185],
+PEK:["Peking",40.0799,116.6031],PVG:["Shanghai",31.1443,121.8083],NRT:["Tokio Narita",35.7720,140.3929],
+HND:["Tokio Haneda",35.5494,139.7798],ICN:["Seoul",37.4602,126.4407],MLE:["Malé",4.1918,73.5291],
+CMB:["Colombo",7.1808,79.8841],SYD:["Sydney",-33.9461,151.1772],MEL:["Melbourne",-37.6733,144.8433],
+JFK:["New York JFK",40.6413,-73.7781],EWR:["Newark",40.6895,-74.1745],BOS:["Boston",42.3656,-71.0096],
+IAD:["Washington",38.9531,-77.4565],ORD:["Chicago",41.9742,-87.9073],ATL:["Atlanta",33.6407,-84.4277],
+MIA:["Miami",25.7959,-80.2870],MCO:["Orlando",28.4312,-81.3081],LAX:["Los Angeles",33.9416,-118.4085],
+SFO:["San Francisco",37.6213,-122.3790],LAS:["Las Vegas",36.0840,-115.1537],SEA:["Seattle",47.4502,-122.3088],
+YYZ:["Toronto",43.6777,-79.6248],YUL:["Montreal",45.4706,-73.7408],YVR:["Vancouver",49.1967,-123.1815],
+MEX:["Mexiko-Stadt",19.4363,-99.0721],CUN:["Cancún",21.0365,-86.8771],PUJ:["Punta Cana",18.5674,-68.3634],
+HAV:["Havanna",22.9892,-82.4091],GRU:["São Paulo",-23.4356,-46.4731],GIG:["Rio de Janeiro",-22.8100,-43.2506],
+EZE:["Buenos Aires",-34.8222,-58.5358],BOG:["Bogotá",4.7016,-74.1469],LIM:["Lima",-12.0219,-77.1143],
+JNB:["Johannesburg",-26.1392,28.2460],CPT:["Kapstadt",-33.9715,18.6021],NBO:["Nairobi",-1.3192,36.9278],
+ADD:["Addis Abeba",8.9779,38.7993],LOS:["Lagos",6.5774,3.3212],ZNZ:["Sansibar",-6.2220,39.2249],
+MRU:["Mauritius",-20.4302,57.6836],SEZ:["Seychellen",-4.6743,55.5218],KEF:["Reykjavík",63.9850,-22.6056]
+};
+
+// ---------- Geo-Mathematik ----------
+const R=6371,rad=d=>d*Math.PI/180,deg=r=>r*180/Math.PI;
+function dist(a,b){const dLat=rad(b[0]-a[0]),dLon=rad(b[1]-a[1]);
+  const h=Math.sin(dLat/2)**2+Math.cos(rad(a[0]))*Math.cos(rad(b[0]))*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.min(1,Math.sqrt(h)));}
+function bearing(a,b){const y=Math.sin(rad(b[1]-a[1]))*Math.cos(rad(b[0]));
+  const x=Math.cos(rad(a[0]))*Math.sin(rad(b[0]))-Math.sin(rad(a[0]))*Math.cos(rad(b[0]))*Math.cos(rad(b[1]-a[1]));
+  return (deg(Math.atan2(y,x))+360)%360;}
+// Punkt auf dem Großkreis bei Anteil f (0..1)
+function gcPoint(a,b,f){const d=dist(a,b)/R;if(d===0)return a;
+  const A=Math.sin((1-f)*d)/Math.sin(d),B=Math.sin(f*d)/Math.sin(d);
+  const la1=rad(a[0]),lo1=rad(a[1]),la2=rad(b[0]),lo2=rad(b[1]);
+  const x=A*Math.cos(la1)*Math.cos(lo1)+B*Math.cos(la2)*Math.cos(lo2);
+  const y=A*Math.cos(la1)*Math.sin(lo1)+B*Math.cos(la2)*Math.sin(lo2);
+  const z=A*Math.sin(la1)+B*Math.sin(la2);
+  return [deg(Math.atan2(z,Math.hypot(x,y))),deg(Math.atan2(y,x))];}
+function gcLine(a,b,n=128){const pts=[];for(let i=0;i<=n;i++)pts.push(gcPoint(a,b,i/n));
+  // Längengrade stetig machen (Datumsgrenze)
+  for(let i=1;i<pts.length;i++){while(pts[i][1]-pts[i-1][1]>180)pts[i][1]-=360;while(pts[i][1]-pts[i-1][1]<-180)pts[i][1]+=360;}
+  return pts;}
+const compass=h=>["N","NO","O","SO","S","SW","W","NW"][Math.round(h/45)%8];
+const fmtKm=k=>k>=100?Math.round(k).toLocaleString("de-DE"):k.toFixed(1).replace(".",",");
+
+// ---------- Speicher ----------
+const store={get(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}},
+  set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch{}}};
+let flights=store.get("flights",[]);
+const $=id=>document.getElementById(id);
+function toast(t){const el=$("toast");el.textContent=t;el.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(()=>el.hidden=true,3200);}
+
+// ---------- Eingabe ----------
+function apHint(inp,out){const c=inp.value.trim().toUpperCase();
+  if(c.length<3){out.textContent="";out.className="ap";return}
+  if(AP[c]){out.textContent=AP[c][0];out.className="ap"}else{out.textContent="Unbekannt – anderen Code probieren";out.className="ap bad"}}
+$("from").oninput=()=>apHint($("from"),$("fromName"));
+$("to").oninput=()=>apHint($("to"),$("toName"));
+$("f").onsubmit=e=>{e.preventDefault();
+  const from=$("from").value.trim().toUpperCase(),to=$("to").value.trim().toUpperCase();
+  if(!AP[from]||!AP[to]){toast("Flughafen-Code nicht in der Liste");return}
+  const dep=new Date($("dep").value).getTime(),arr=new Date($("arr").value).getTime();
+  if(!(arr>dep)){toast("Ankunft muss nach dem Abflug liegen");return}
+  const fl={id:Date.now().toString(36),nr:$("nr").value.trim(),from,to,dep,arr};
+  flights.push(fl);store.set("flights",flights);$("f").reset();$("fromName").textContent=$("toName").textContent="";
+  renderList();openFlight(fl.id);};
+
+function renderList(){const L=$("flist");L.innerHTML="";
+  flights.slice().sort((a,b)=>a.dep-b.dep).forEach(fl=>{
+    const d=new Date(fl.dep);const div=document.createElement("div");div.className="fitem";
+    const km=Math.round(dist(AP[fl.from].slice(1),AP[fl.to].slice(1)));
+    div.innerHTML=`<div class="route">${fl.from} → ${fl.to}<span class="meta"></span></div>`;
+    div.querySelector(".meta").textContent=`${fl.nr?fl.nr+" · ":""}${d.toLocaleDateString("de-DE",{weekday:"short",day:"2-digit",month:"2-digit"})} ${d.toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"})} · ${km.toLocaleString("de-DE")} km`;
+    const o=document.createElement("button");o.className="pri";o.textContent="Öffnen";o.onclick=()=>openFlight(fl.id);
+    const x=document.createElement("button");x.className="ghost";x.textContent="✕";x.setAttribute("aria-label","Flug löschen");
+    x.onclick=()=>{if(x.dataset.c){flights=flights.filter(f=>f.id!==fl.id);store.set("flights",flights);renderList()}else{x.dataset.c=1;x.textContent="Löschen?";setTimeout(()=>{delete x.dataset.c;x.textContent="✕"},3000)}};
+    div.append(o,x);L.append(div);});
+  if(!flights.length)L.innerHTML='<p class="hint">Noch kein Flug gespeichert.</p>';}
+
+// ---------- Live ----------
+let map,plane,cur,watchId,lastFix=null,routeLine,trackLine,track=[],wakeLock=null,timer;
+const TILE="https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+
+function openFlight(id){cur=flights.find(f=>f.id===id);if(!cur)return;
+  store.set("active",id);$("setup").hidden=true;$("live").hidden=false;
+  const A=AP[cur.from],B=AP[cur.to];
+  $("lFrom").textContent=cur.from;$("lTo").textContent=cur.to;$("lNr").textContent=cur.nr||`${A[0]} – ${B[0]}`;
+  if(!map){map=L.map("map",{zoomControl:false,attributionControl:true,worldCopyJump:true});
+    L.tileLayer(TILE,{maxZoom:9,attribution:"© OpenStreetMap"}).addTo(map);
+    map.on("dragstart",()=>map._userMoved=true);
+    $("status").onclick=()=>{map._userMoved=false;update()};}
+  if(routeLine)routeLine.remove();if(trackLine)trackLine.remove();
+  const line=gcLine(A.slice(1),B.slice(1));
+  routeLine=L.polyline(line,{color:"#e879f9",weight:3,dashArray:"6 6"}).addTo(map);
+  track=store.get("track_"+id,[]);
+  trackLine=L.polyline(track,{color:"#4ade80",weight:3}).addTo(map);
+  [[A,cur.from],[B,cur.to]].forEach(([p,c])=>L.circleMarker([p[1],p[2]],{radius:5,color:"#3fd0e6",fillOpacity:1}).addTo(map).bindTooltip(c,{permanent:true,direction:"top",className:""}));
+  if(!plane)plane=L.marker([A[1],A[2]],{icon:L.divIcon({className:"",html:'<div class="plane" id="pl">✈</div>',iconSize:[26,26],iconAnchor:[13,13]})}).addTo(map);
+  map.fitBounds(routeLine.getBounds(),{padding:[30,30]});
+  setTimeout(()=>map.invalidateSize(),50);
+  clearInterval(timer);timer=setInterval(update,5000);update();
+  if(store.get("gpsOn",false))startGps();}
+
+$("back").onclick=()=>{$("live").hidden=true;$("setup").hidden=false;store.set("active",null);clearInterval(timer);stopGps();renderList();};
+
+function startGps(){if(!("geolocation" in navigator)){toast("Dieses Gerät bietet kein GPS im Browser");return}
+  stopGps();store.set("gpsOn",true);$("btnGps").textContent="GPS stoppen";$("btnGps").className="";
+  watchId=navigator.geolocation.watchPosition(p=>{
+    lastFix=p;const pt=[p.coords.latitude,p.coords.longitude];
+    const prev=track[track.length-1];
+    if(!prev||dist(prev,pt)>2){track.push(pt);if(track.length>3000)track.shift();store.set("track_"+cur.id,track);trackLine.setLatLngs(track);}
+    update();
+  },err=>{toast(err.code===1?"GPS-Zugriff wurde abgelehnt – in den Browser-Einstellungen erlauben":"Noch kein GPS-Signal, ans Fenster halten");update();},
+  {enableHighAccuracy:true,maximumAge:5000,timeout:60000});}
+function stopGps(){if(watchId!=null)navigator.geolocation.clearWatch(watchId);watchId=null;
+  $("btnGps").textContent="GPS starten";$("btnGps").className="pri";}
+$("btnGps").onclick=()=>{if(watchId!=null){stopGps();store.set("gpsOn",false);update()}else startGps()};
+
+function nearest(pt){let best=null,bd=1e9;for(const c in AP){const d=dist(pt,AP[c].slice(1));if(d<bd){bd=d;best=c}}return [best,bd];}
+
+function update(){if(!cur)return;
+  const A=AP[cur.from].slice(1),B=AP[cur.to].slice(1),total=dist(A,B),now=Date.now();
+  const fresh=lastFix&&now-lastFix.timestamp<120000;
+  let pos,mode;
+  if(fresh){pos=[lastFix.coords.latitude,lastFix.coords.longitude];mode="gps"}
+  else{const f=Math.min(1,Math.max(0,(now-cur.dep)/(cur.arr-cur.dep)));pos=gcPoint(A,B,f);mode="est"}
+  const dA=dist(A,pos),dB=dist(pos,B);
+  const frac=Math.min(1,Math.max(0,dA/(dA+dB||1)));
+  // Status
+  const st=$("status");
+  if(mode==="gps"){st.className="status s-gps";st.textContent="GPS "+Math.round(lastFix.coords.accuracy)+" m"}
+  else{st.className="status s-est";st.textContent=watchId!=null?"Suche GPS · geschätzt":"Geschätzt (Uhrzeit)"}
+  // Karte
+  plane.setLatLng(pos);
+  let hdg=null;
+  if(mode==="gps"&&lastFix.coords.heading!=null&&!isNaN(lastFix.coords.heading)&&lastFix.coords.speed>5)hdg=lastFix.coords.heading;
+  else if(dB>1)hdg=bearing(pos,B);
+  const pl=document.getElementById("pl");if(pl&&hdg!=null)pl.style.transform=`rotate(${hdg-90}deg)`;
+  // Werte
+  $("pbar").style.width=(frac*100).toFixed(1)+"%";
+  $("vRem").innerHTML=fmtKm(dB)+"<small>km</small>";
+  $("vDone").innerHTML=fmtKm(dA)+"<small>km</small>";
+  $("vHdg").innerHTML=hdg!=null?Math.round(hdg)+"°<small>"+compass(hdg)+"</small>":"—";
+  let spd=null;if(mode==="gps"&&lastFix.coords.speed!=null)spd=lastFix.coords.speed*3.6;
+  $("vSpd").innerHTML=spd!=null?Math.round(spd)+"<small>km/h</small>":(mode==="est"?Math.round(total/((cur.arr-cur.dep)/3.6e6))+"<small>km/h Ø</small>":"—");
+  const alt=mode==="gps"?lastFix.coords.altitude:null;
+  $("vAlt").innerHTML=alt!=null?Math.round(alt).toLocaleString("de-DE")+"<small>m · "+Math.round(alt*3.281/100)*100+" ft</small>":"—";
+  let eta=cur.arr;if(spd&&spd>200)eta=now+dB/spd*3.6e6;
+  const t=new Date(eta);$("vEta").innerHTML=t.toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"})+"<small>"+(eta>now?"in "+Math.max(0,Math.round((eta-now)/60000))+" min":"")+"</small>";
+  // In der Nähe
+  const [nc,nd]=nearest(pos);
+  const n=$("near");
+  if(now<cur.dep&&mode==="est")n.innerHTML="Noch nicht gestartet · Abflug "+new Date(cur.dep).toLocaleTimeString("de-DE",{hour:"2-digit",minute:"2-digit"});
+  else if(frac>=.999)n.innerHTML="Angekommen in <b></b>";
+  else n.innerHTML=(nd<40?"Über ":"Nächster Flughafen: ")+"<b></b> <span style='color:var(--dim)'>("+Math.round(nd)+" km)</span>";
+  const b=n.querySelector("b");if(b)b.textContent=frac>=.999?AP[cur.to][0]:AP[nc][0];
+  if(map&&!map._userMoved)map.panTo(pos,{animate:false});}
+
+
+// ---------- Karte offline speichern ----------
+function lon2x(lon,z){return Math.floor((lon+180)/360*2**z)}
+function lat2y(lat,z){const r=rad(lat);return Math.floor((1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*2**z)}
+$("btnCache").onclick=async()=>{if(!cur)return;
+  const A=AP[cur.from].slice(1),B=AP[cur.to].slice(1),line=gcLine(A,B,200),urls=new Set();
+  for(let z=2;z<=7;z++){const pad=z>=6?1:0;
+    for(const [la,lo0] of line){const lo=((lo0+540)%360)-180,x=lon2x(lo,z),y=lat2y(la,z),n=2**z;
+      for(let dx=-pad;dx<=pad;dx++)for(let dy=-pad;dy<=pad;dy++){const yy=y+dy;if(yy<0||yy>=n)continue;
+        urls.add(`https://tile.openstreetmap.org/${z}/${(x+dx+n)%n}/${yy}.png`)}}}
+  if(!("caches" in window)){toast("Offline-Speicher wird von diesem Browser nicht unterstützt");return}
+  const list=[...urls];let ok=0;const btn=$("btnCache");btn.disabled=true;
+  const c=await caches.open("tiles-v1");
+  for(let i=0;i<list.length;i+=6){await Promise.all(list.slice(i,i+6).map(async u=>{
+    try{if(await c.match(u)){ok++;return}const r=await fetch(u,{mode:"cors"});if(r.ok){await c.put(u,r);ok++}}catch{}}));
+    btn.textContent=`Speichere … ${Math.round((i+6)/list.length*100)}%`;}
+  btn.disabled=false;btn.textContent="Karte offline gespeichert ✓";
+  toast(`${ok} von ${list.length} Kartenkacheln gespeichert`);};
+
+// ---------- Bildschirm anlassen ----------
+$("btnWake").onclick=async()=>{try{if(wakeLock){await wakeLock.release();wakeLock=null;$("btnWake").textContent="Bildschirm anlassen";return}
+  wakeLock=await navigator.wakeLock.request("screen");$("btnWake").textContent="Bildschirm bleibt an ✓";
+  wakeLock.addEventListener("release",()=>{wakeLock=null;$("btnWake").textContent="Bildschirm anlassen"});}
+  catch{toast("Dieser Browser kann den Bildschirm nicht anlassen")}};
+document.addEventListener("visibilitychange",async()=>{if(document.visibilityState==="visible"&&$("btnWake").textContent.includes("✓")&&!wakeLock){try{wakeLock=await navigator.wakeLock.request("screen")}catch{}}});
+
+// ---------- Start ----------
+renderList();
+const act=store.get("active",null);if(act&&flights.some(f=>f.id===act))openFlight(act);
+if("serviceWorker" in navigator&&location.protocol.startsWith("http"))navigator.serviceWorker.register("sw.js").catch(()=>{});
+</script>
+</body>
+</html>

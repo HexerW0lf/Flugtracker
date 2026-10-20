@@ -34,9 +34,12 @@ button{font:700 14px var(--sans);letter-spacing:.04em;border-radius:10px;border:
 button.pri{background:var(--cyan);color:#04202a;border-color:var(--cyan)}
 button.ghost{background:transparent}
 button:focus-visible,input:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
-input{font:16px var(--mono);width:100%;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:11px 12px}
+input{font:16px var(--mono);width:100%;min-width:0;max-width:100%;display:block;-webkit-appearance:none;appearance:none;min-height:46px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:11px 12px}
 form{display:grid;gap:14px;margin-top:16px}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.row1{display:grid;grid-template-columns:minmax(0,1fr);gap:14px}
+.row2{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+input::-webkit-date-and-time-value{text-align:left}
 .field{display:grid;gap:6px;min-width:0}
 .hint{color:var(--dim);font-size:13px}
 .ap{font-size:12px;color:var(--cyan);min-height:1.2em}
@@ -85,7 +88,7 @@ form{display:grid;gap:14px;margin-top:16px}
         <input id="to" maxlength="3" placeholder="IST" required style="text-transform:uppercase">
         <div class="ap" id="toName"></div></div>
     </div>
-    <div class="row2">
+    <div class="row1">
       <div class="field"><label class="lbl" for="dep">Abflug</label><input id="dep" type="datetime-local" required></div>
       <div class="field"><label class="lbl" for="arr">Ankunft</label><input id="arr" type="datetime-local" required></div>
     </div>
